@@ -1,1 +1,1 @@
-# PyTorch-Latent-Diffusion
+# PyTorch Latent Diffusion (Stable Diffusion)
