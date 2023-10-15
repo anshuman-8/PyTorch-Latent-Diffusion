@@ -198,7 +198,20 @@ class UNet(nn.Module):
         ])
 
     def forward(self, latent:torch.Tensor, context:torch.Tensor, time:torch.Tensor)->torch.Tensor:
-        pass
+        skip_connections = []
+        for layers in self.encoder:
+            x = layers(x, context, time)
+            skip_connections.append(x)
+
+        x = self.bottleneck(x, context, time)
+
+        for layers in self.decoder:
+            # Since we always concat with the skip connection of the encoder, the number of features increases before being sent to the decoder's layer
+            x = torch.cat((x, skip_connections.pop()), dim=1) 
+            x = layers(x, context, time)
+        
+        return x
+        
 
 
 class UNet_Output(nn.Module):
