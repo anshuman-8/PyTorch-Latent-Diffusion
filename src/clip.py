@@ -1,71 +1,96 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+from torch.nn import functional as F
 from attention import SelfAttention
 
-
 class CLIPEmbedding(nn.Module):
-    def __init__(self, vocab_size:int, embedding_dim:int, context_size:int): # context_size is the number of tokens in the context
+    def __init__(self, n_vocab: int, n_embd: int, n_token: int):
         super().__init__()
-        self.token_embedding = nn.Embedding(vocab_size, embedding_dim)
-        # for positional embedding learnable parameters are used 
-        self.positional_embedding = nn.Parameter(torch.zeros(context_size, embedding_dim)) # try random instead of zeros
-
-    def forward(self, tokens):
-        output = self.token_embedding(tokens) + self.positional_embedding
-        return output
+        
+        self.token_embedding = nn.Embedding(n_vocab, n_embd)
+        # A learnable weight matrix encodes the position information for each token
+        self.position_embedding = nn.Parameter(torch.zeros((n_token, n_embd)))
     
+    def forward(self, tokens):
+        # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim) 
+        x = self.token_embedding(tokens)
+        # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
+        x += self.position_embedding
+        
+        return x
 
 class CLIPLayer(nn.Module):
-    def __init__(self, num_heads:int, embedding_dim:int):
+    def __init__(self, n_head: int, n_embd: int):
         super().__init__()
-        self.layer_norm1 = nn.LayerNorm(embedding_dim)
-        self.attention = SelfAttention(num_heads, embedding_dim)
-        self.layer_norm2 = nn.LayerNorm(embedding_dim)
-        self.linear1 = nn.Linear(embedding_dim, embedding_dim*4)
-        self.linear2 = nn.Linear(embedding_dim*4, embedding_dim)
-
-
-    def forward(self, x:torch.Tensor)->torch.Tensor:
-        residue1 = x
-        x = self.attention(x)
-
-        x = self.layer_norm1(x)
-        x = x + residue1
-
-        residue2 = x
-
-        x = self.layer_norm2(x)
-        x = self.linear1(x)
-        x *= torch.sigmoid(x*1.702) # Quick GELU Activation
-        x = self.linear2(x)
         
-        x = x + residue2
+        # Pre-attention norm
+        self.layernorm_1 = nn.LayerNorm(n_embd)
+        # Self attention
+        self.attention = SelfAttention(n_head, n_embd)
+        # Pre-FNN norm
+        self.layernorm_2 = nn.LayerNorm(n_embd)
+        # Feedforward layer
+        self.linear_1 = nn.Linear(n_embd, 4 * n_embd)
+        self.linear_2 = nn.Linear(4 * n_embd, n_embd)
 
-        output = x
+    def forward(self, x):
+        # (Batch_Size, Seq_Len, Dim)
+        residue = x
+        
+        ### SELF ATTENTION ###
 
-        return output
+        # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        x = self.layernorm_1(x)
+        
+        # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        x = self.attention(x, causal_mask=True)
+        
+        # (Batch_Size, Seq_Len, Dim) + (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        x += residue
 
+        ### FEEDFORWARD LAYER ###
+        # Apply a feedforward layer where the hidden dimension is 4 times the embedding dimension. 
+
+        residue = x
+        # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        x = self.layernorm_2(x)
+        
+        # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, 4 * Dim)
+        x = self.linear_1(x)
+        
+        # (Batch_Size, Seq_Len, 4 * Dim) -> (Batch_Size, Seq_Len, 4 * Dim)
+        x = x * torch.sigmoid(1.702 * x)   # QuickGELU activation function
+        
+        # (Batch_Size, Seq_Len, 4 * Dim) -> (Batch_Size, Seq_Len, Dim)
+        x = self.linear_2(x)
+        
+        # (Batch_Size, Seq_Len, Dim) + (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        x += residue
+
+        return x
 
 class CLIP(nn.Module):
     def __init__(self):
+        super().__init__()
         self.embedding = CLIPEmbedding(49408, 768, 77)
 
         self.layers = nn.ModuleList([
             CLIPLayer(12, 768) for i in range(12)
         ])
 
-        self.layer_norm = nn.LayerNorm(768)
-
-    def forward(self, tokens:torch.LongTensor)->torch.FloatTensor:
-        token = tokens.type(torch.long)
-        state = self.embedding(token)
-
-        for layer in self.layers:
-            state = layer(state)
-
-        output = self.layer_norm(state)
-
-        return output
+        self.layernorm = nn.LayerNorm(768)
     
+    def forward(self, tokens: torch.LongTensor) -> torch.FloatTensor:
+        tokens = tokens.type(torch.long)
         
+        # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
+        state = self.embedding(tokens)
+
+        # Apply encoder layers similar to the Transformer's encoder.
+        for layer in self.layers: 
+            # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+            state = layer(state)
+        # (Batch_Size, Seq_Len, Dim) -> (Batch_Size, Seq_Len, Dim)
+        output = self.layernorm(state)
+        
+        return output
